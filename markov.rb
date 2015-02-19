@@ -1,56 +1,93 @@
-require "marky_markov"
-require "optparse"
-require "ostruct"
+class MarkovWord
+  attr_accessor :string
 
-class OptsParser
-  def self.parse(args)
-    options = OpenStruct.new
-    options.corpus = []
-    options.delete = false
-    options.verbose = false
+  def initialize(string, start = false)
+    @string = string
+    @start = start
+  end
 
-    opt_parser = OptionParser.new do |opts|
-      opts.banner = "Usage: ruby markov.rb [options]"
+  def start?
+    @start
+  end
 
-      opts.on("-a", "--add CORPUS", "Add corpus") do |corpus|
-        options.corpus << corpus
-      end
+  def punctuation?
+    ( @string =~ /[!?\n]/ || @string == '.' )
+  end
 
-      opts.on("-d", "--delete", "Delete existing dictionary") do
-        options.delete = true
-      end
+  def to_s
+    @string
+  end
 
-      opts.on("-v", "--verbose", "Run verbosely") do
-        options.verbose = true
-      end
+  def eql?(other)
+    @string == other.string
+  end
+
+  def hash
+    @string.hash
+  end
+end
+
+class MarkovChain
+  def initialize(*corpuses)
+    @corpus = {}
+    @split_words = /(\.[[:blank:]]+)|(\.$)|([?!])|[[[:blank:]]]+/
+    @split_sentence1 = /(?<=\n)\s*/
+    @split_sentence2 = /(?<=[.!?])\s+/
+
+    Array.new(corpuses).each do |c|
+      text = File.exist?(c) ? File.read(c) : c
+      parse_corpus(text)
     end
 
-    opt_parser.parse!(args)
-    options
-  end
-end
-
-options = OptsParser.parse(ARGV)
-
-dict_name = "dictionary"
-
-if options.delete
-  puts "Deleting dictionary '#{dict_name}'" if options.verbose
-  MarkyMarkov::Dictionary.delete_dictionary! dict_name
-end
-
-markov = MarkyMarkov::Dictionary.new dict_name
-markov.instance_variable_set(:@split_sentence, /(?<=[.!?:;\n])\s+/)
-
-if !options.corpus.empty?
-  options.corpus.each do |corpus|
-    puts "Parsing corpus '#{corpus}'" if options.verbose
-    markov.parse_file corpus
+    puts generate_sentence
   end
 
-  puts "Saving dictionaryy '#{dict_name}'" if options.verbose
-  markov.save_dictionary!
-end
+  def generate_sentence
+    max_length = 30
+    sentence = []
+    sentence << @corpus.keys.select(&:start?).sample
 
-puts "Generated sentence:\n#{'-'*40}" if options.verbose
-puts markov.generate_n_sentences 1
+    until (sentence.last.punctuation?) || sentence.size > max_length
+      word = weighted_random(@corpus[sentence.last])
+      sentence << word
+    end
+
+    sentence.map(&:to_s).join(" ")
+  end
+
+  private
+  def weighted_random(hash)
+    cdf = {}
+    acc = 0
+    hash.each { |k, v| cdf[k] = (acc += v) }
+
+    r = rand(0..acc)
+    selected = cdf.find { |k, v| v >= r }
+
+    selected[0]
+  end
+
+  def parse_corpus(text)
+    sentences = text.split(@split_sentence1).map { |x| x.split(@split_sentence2) }.flatten
+
+    sentences.each do |sentence|
+      start = true
+      sentence.split(@split_words).each_cons(2) do |w1, w2|
+        word1 = MarkovWord.new(w1, start)
+        start = false
+        word2 = MarkovWord.new(w2)
+
+        if @corpus.key? word1
+          if @corpus[word1].key? word2
+            @corpus[word1][word2] += 1
+          else
+            @corpus[word1][word2] = 1
+          end
+        else
+          @corpus[word1] = {}
+          @corpus[word1][word2] = 1
+        end
+      end
+    end
+  end
+end
